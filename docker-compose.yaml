@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  mongodb:
+    image: mongo:8.0 # You can change the version if needed
+    container_name: mongodb
+    restart: always
+    ports:
+      - "27017:27017" # Exposes the default MongoDB port
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root # Set your admin username
+      MONGO_INITDB_ROOT_PASSWORD: password # Set your admin password
+    volumes:
+      - mongo-data:/data/db # Persist database data
+      - mongo-config:/data/configdb
+
+volumes:
+  mongo-data:
+    driver: local
+  mongo-config:
+    driver: local
