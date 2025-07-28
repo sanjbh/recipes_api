@@ -14,8 +14,31 @@ services:
       - mongo-data:/data/db # Persist database data
       - mongo-config:/data/configdb
 
+  redis:
+    image: redis:latest
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command:
+      [
+        "redis-server",
+        "--maxmemory",
+        "512mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
 volumes:
   mongo-data:
     driver: local
   mongo-config:
+    driver: local
+  redis-data:
     driver: local

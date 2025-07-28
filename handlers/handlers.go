@@ -2,49 +2,75 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"recipes-api/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type RecipesHandler struct {
-	collection *mongo.Collection
-	ctx        context.Context
+	collection  *mongo.Collection
+	ctx         context.Context
+	redisClient *redis.Client
 }
 
-func NewRecipesHandler(ctx context.Context, collection *mongo.Collection) *RecipesHandler {
+func NewRecipesHandler(ctx context.Context, collection *mongo.Collection, redisClient *redis.Client) *RecipesHandler {
 	return &RecipesHandler{
 		collection,
 		ctx,
+		redisClient,
 	}
 }
 
 func (handler *RecipesHandler) ListRecipesHandler(c *gin.Context) {
-	cur, err := handler.collection.Find(handler.ctx, bson.M{})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
-		})
-		return
-	}
-	defer cur.Close(handler.ctx)
+	val, err := handler.redisClient.Get(handler.ctx, "recipes").Result()
 
-	recipes := make([]models.Recipe, 0)
-
-	for cur.Next(handler.ctx) {
-		var recipe models.Recipe
-		if err := cur.Decode(&recipe); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if err == redis.Nil {
+		log.Println("Cache miss. Request to mongodb")
+		cur, err := handler.collection.Find(handler.ctx, bson.M{})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": err.Error(),
+			})
 			return
 		}
-		recipes = append(recipes, recipe)
+		defer cur.Close(handler.ctx)
+
+		recipes := make([]models.Recipe, 0)
+
+		for cur.Next(handler.ctx) {
+			var recipe models.Recipe
+			if err := cur.Decode(&recipe); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			recipes = append(recipes, recipe)
+		}
+
+		data, err := json.Marshal(&recipes)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err})
+			return
+		}
+
+		handler.redisClient.Set(handler.ctx, "recipes", string(data), 0)
+		c.JSON(http.StatusOK, &recipes)
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err})
+		return
+	} else {
+		log.Printf("Cache hit. Request to redis")
+		recipes := make([]models.Recipe, 0)
+		json.Unmarshal([]byte(val), &recipes)
+		c.JSON(http.StatusOK, recipes)
 	}
-	c.JSON(http.StatusOK, &recipes)
 
 }
 
@@ -62,6 +88,9 @@ func (handler *RecipesHandler) NewRecipeHandler(c *gin.Context) {
 			"error": fmt.Sprintf("Unable to insert new record: %v", err.Error()),
 		})
 	}
+
+	log.Println("Remove data from Redis")
+	handler.redisClient.Del(handler.ctx, "recipes")
 
 	c.JSON(http.StatusOK, &recipe)
 
@@ -103,6 +132,9 @@ func (handler *RecipesHandler) UpdateRecipeHandler(c *gin.Context) {
 		})
 		return
 	}
+
+	log.Println("Remove data from Redis")
+	handler.redisClient.Del(handler.ctx, "recipes")
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Recipe has been updated",

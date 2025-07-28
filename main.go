@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"recipes-api/handlers"
 	"recipes-api/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -17,7 +21,7 @@ import (
 
 // var recipes []models.Recipe
 // var collection *mongo.Collection
-var recipesHandler handlers.RecipesHandler
+var recipesHandler *handlers.RecipesHandler
 
 func init() {
 
@@ -29,9 +33,13 @@ func init() {
 	}
 	log.Println("Connected to MongoDB")
 
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379", // or "redis:6379" in Docker
+		Password: "",               // set if your Redis requires auth
+		DB:       0,                // use default DB
+	})
 	collection := client.Database(os.Getenv("MONGO_DATABASE")).Collection("recipes")
-
-	recipesHandler = *handlers.NewRecipesHandler(ctx, collection)
+	recipesHandler = handlers.NewRecipesHandler(ctx, collection, redisClient)
 
 	count, err := GetNumberOfRecordsFromMongoCollection()
 	if err != nil {
@@ -46,7 +54,8 @@ func init() {
 		log.Println("Skipping data insert into DB as it is already populated")
 	}
 
-	recipesHandler = *handlers.NewRecipesHandler(ctx, collection)
+	status := redisClient.Ping(ctx)
+	fmt.Println(status)
 
 }
 
@@ -61,21 +70,41 @@ func main() {
 }
 
 func InsertRecipesFromFile() error {
+
+	var tempRecipes []struct {
+		ID           string    `json:"id"`
+		Name         string    `json:"name" bson:"name"`
+		Tags         []string  `json:"tags" bson:"tags"`
+		Ingredients  []string  `json:"ingredients" bson:"ingredients"`
+		Instructions []string  `json:"instructions" bson:"instructions"`
+		PublishedAt  time.Time `json:"publishedAt" bson:"publishedAt"`
+	}
+
 	file, err := os.ReadFile("recipes.json")
 	if err != nil {
 		return err
 	}
 
-	recipes := make([]models.Recipe, 0)
-
-	if err := json.Unmarshal(file, &recipes); err != nil {
+	if err := json.Unmarshal(file, &tempRecipes); err != nil {
 		return err
 	}
 
-	listOfRecipes := make([]any, len(recipes))
+	// recipes := make([]models.Recipe, len(tempRecipes))
+	listOfRecipes := make([]any, len(tempRecipes))
 
-	for i, r := range recipes {
-		listOfRecipes[i] = r
+	for index, recipe := range tempRecipes {
+		objectId, err := primitive.ObjectIDFromHex(recipe.ID)
+		if err != nil {
+			objectId = primitive.NewObjectID()
+		}
+		listOfRecipes[index] = models.Recipe{
+			ID:           objectId,
+			Name:         recipe.Name,
+			Tags:         recipe.Tags,
+			Ingredients:  recipe.Ingredients,
+			Instructions: recipe.Instructions,
+			PublishedAt:  recipe.PublishedAt,
+		}
 	}
 
 	collection := recipesHandler.GetCollection()
